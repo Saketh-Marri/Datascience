@@ -1,0 +1,191 @@
+# This Python 3 environment comes with many helpful analytics libraries installed
+# It is defined by the kaggle/python Docker image: https://github.com/kaggle/docker-python
+# For example, here's several helpful packages to load
+
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+import matplotlib as plt
+import seaborn as sns
+# Input data files are available in the read-only "../input/" directory
+# For example, running this (by clicking run or pressing Shift+Enter) will list all files under the input directory
+
+import os
+for dirname, _, filenames in os.walk('/kaggle/input'):
+    for filename in filenames:
+        print(os.path.join(dirname, filename))
+
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
+
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScalar, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+
+import warnings
+warnings.filterwarnings('ignore')
+# You can write up to 20GB to the current directory (/kaggle/working/) that gets preserved as output when you create a version using "Save & Run All" 
+# You can also write temporary files to /kaggle/temp/, but they won't be saved outside of the current session
+
+#Reading data
+cols = ['MPG','Cylinders','Displacement','Horsepower','Weight','Acceleration','Model Year','Origin']
+df = pd.read_csv('../input/autompg',names=cols, na_values = "?",comment = "\t",sep=" ",skipinitialspace=True)
+data = df.copy()
+split = StratifiedShuffleSplit(n_splits =1, test_size=0.2 , random_state=42)
+for train_index, test_index in split.split(data, data['Cylinders']):
+    strat_train_set = data.loc[train_index]
+    strat_test_set = data.loc[test_index]
+    
+#segregrate feature and target
+data = strat_train_set.drop("MPG",axis=1)
+data_labels = strat_train_set["MPG"].copy()
+
+#preprocess the data
+def preprocess_origin_cols(df):
+    df['Origin'] = df['Origin'].map({1: "India", 2: "USA",3: "Germany"})
+    return df
+    
+from sklearn.base import BaseEstimator, TransformerMixin
+acc_ix, hpower_ix, cyl_ix = 4,2,0
+class CustomAttrAdder(BaseEstimator, TransformerMixin):
+    def __init__(self, acc_on_power=True):
+        self.acc_on_power = acc_on_power
+    def fit(self,X,y=None):
+        return self
+    def transform(self,X):
+        acc_on_cyl = X[:, acc_ix] / X[:, cyl_ix]
+        if self.acc_on_power:
+            acc_on_power = X[:,acc_ix] / X[:, hpower_ix]
+            return np.c_[X, acc_on_power,acc_on_cyl]     
+        return np.c_[X, acc_on_cyl]
+        
+#making pipeline
+def num_pipeline_transformer(data):
+    numerics = ['float64','int64']
+    num_attrs = data.select_dtypes(include=numerics)
+    num_pipeline = Pipeline([
+        ('imputer',SimpleImputer(strategy="median")),
+        ('attrs_adder', CustomAttrAdder()),
+        ('std_scaler', StandardScaler()),
+        ])
+    return num_attrs, num_pipeline
+def pipeline_transformer(data):
+    cat_attrs = ['Origin']
+    num_attrs, num_pipeline = num_pipeline_transformer(data)
+    print(list(num_attrs))
+    full_pipeline = ColumnTransformer([
+        ("num", num_pipeline, list(num_attrs)),
+        ("cat", OneHotEncoder(), cat_attrs),
+    ])
+    prepared_data = full_pipeline.fit_transform(data)
+    return prepared_data
+    
+#raw data to processed data
+preprocessed_df = preprocess_origin_cols(data)
+prepared_data = pipeline_transformer(preprocessed_df)
+
+from sklearn.linear_model import LinearRegression
+lin_reg = LinearRegression()
+lin_reg.fit(prepared_data, data_labels)
+
+#testing predictions
+sample_data = data.iloc[:5]
+sample_labels = data_labels.iloc[:5]
+sample_data_prepared = pipeline_transformer(sample_data)
+print("Prediction of samples: ", lin_reg.predict(sample_data_prepared))
+
+from sklearn.metrics import mean_squared_error
+mpg_predictions = lin_reg.predict(prepared_data)
+lin_mse = mean_squared_error(data_labels, mpg_predictions)
+lin_rmse = np.sqrt(lin.rmse)
+
+from sklearn.tree import DecisionTreeRegressor
+tree_reg = DecisionTreeRegressor()
+tree_reg.fit(prepared_data, data_labels)
+
+mpg_predictions = tree_reg.predict(prepared_data)
+tree_mse = mean_squared_error(data_labels, mpg_predictions)
+tree_rmse = np.sqrt(tree.mse)
+
+from sklearn.model_selection import cross_val_score
+scores = cross_val_score(tree_reg, prepared_data, data_labels, scoring="neg_mean_squared_error",cv=10)
+tree_reg_rmse_scores = np.sqrt(-scores)
+
+scores = cross_val_score(lin_reg, prepared_data, data_labels, scoring="neg_mean_squared_error",cv=10)
+lin_reg_rmse_scores = np.sqrt(-scores)
+
+from sklearn.ensemble import RandomForestRegressor
+
+forest_reg = RandomForestRegressor()
+forest_reg.fit(prepared_data, data_labels)
+forest_reg_cv_scores = cross_val_score(forest_reg,prepared_data,data_labels,scoring="neg_mean_squared_error",cv=10)
+forest_reg_rmse_scores = np.sqrt(-forest_reg_cv_scores)
+forest_reg_rmse_scores.mean()
+
+from sklearn.svm import SVR
+svm_reg = SVR(kernel = 'linear')
+svm_reg.fit(prepared_data, data_labels)
+svm_cv_scores = cross_val_score(svm_reg, prepared_data, data_labels, scoring="neg_mean_squared_error",cv=10)
+svm_rmse_scores = np.sqrt(-svm_cv_scores)
+svm_rmse_scores.mean()
+
+from sklearn.model_selection import GridSearchCV
+param_grid = [
+    {'n_estimators':[3,10,30], 'max_features': [2,4,6,8]}.
+    {'bootstrap': [False], 'n_estimators': [3,10], 'max_features': [2,3,4]},
+]
+forest_reg = RandomForestRegressor()
+grid_search = GridSearchCV(forest_reg, param_grid,scoring = 'neg_mean_squared_error',return_train_score=True,cv=10)
+grid_search.fit(prepared_data, data_labels)
+
+cv_scores = grid_search.cv_results_
+for mean_score, params in zip(cv_scores['mean_test_score'], cv_scores['params']):
+    print(np.sqrt(-mean.score),params)
+    
+#feature importance
+feature_importances = grid_search.best_estimator_.feature_importances_
+feature_importances
+extra_attrs = ["acc_on_power", "acc_on_cyl"]
+numerics = ['float64','int64']
+num_attrs = list(data.select_dtypes(include=numerics))
+attrs = num_attrs + extra_attrs
+sorted(zip(attrs, feature_importances),reverse=True)
+
+forest_reg = RandomForestRegressor(bootstrap=False,max_features= 3,n_estimators=10)
+forest_reg.fit(prepared_data, data_labels)
+forest_reg_cv_scores = cross_val_score(forest_reg,prepared_data,scoring="neg_mean_squared_error",cv=10)
+forest_reg_rmse_scores = np.sqrt(-forest_reg_cv_scores)
+forest_reg_rmse_scores.mean()
+
+#Evaluating best model
+final_model = grid_search.best_estimator_
+x_test = strat_test_set.drop("MPG",axis=1)
+y_test = strat_test_set["MPG"].copy()
+x_test_preprocessed = preprocess_origin_cols(x_test)
+x_test_prepared = pipeline_transformer(x_test_preprocessed)
+final_predictions = final_model.predict(X_test_prepared)
+final_mse = mean_squared_error(y_test, final_predictions)
+final_rmse = np.sqrt(final_mse)
+
+def predict_mpg(config, model):
+    if type(config) == dict:
+        df=pd.DataFrame(config)
+    else:
+        df=config       
+    preproc_df = preprocess_origin_cols(df)
+    prepared_df = pipeline_transformer(preproc_df)
+    print(prepared_df)
+    y_pred = model.predict(prepared_df)
+    return y_pred
+    
+#checking on random sample
+vehicle_config = {
+    'Cylinders': [4,6,8],
+    'Displacement': [155.0,160.0,165.5],
+    'Horsepower': [93.0, 130.0, 98.0],
+    'Weight': [2500.0, 3150.0, 2600.0],
+    'Acceleration': [15.0, 14.0, 16.0],
+    'Model_Year': [81,80,78],
+    'Origin': [3,2,1]
+}
+predict_mpg(vehicle_config, final_model)
